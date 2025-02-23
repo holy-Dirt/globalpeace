@@ -1,0 +1,20 @@
+body {
+    background-color: lightblue;
+    font-family: Arial, sans-serif;
+    text-align: center;
+    margin: 0;
+    padding: 0;
+}
+
+button {
+    border-radius: 10cap;
+}
+
+form {
+    margin: 0;
+
+}
+
+sub {
+    margin-left: 1cm;
+}
