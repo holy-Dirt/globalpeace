@@ -13,17 +13,7 @@ const dbPromise = open({
     driver: sqlite.Database
 });
 
-// יצירת טבלאות אם לא קיימות
-CREATEuserTable().catch(err => console.error(err));
-CREATEposts().catch(err => console.error(err));
-
-app.use(async (req, res, next) => {
-    const db = await dbPromise;
-    req.db = db;
-    next();
-});
-
-async function CREATEuserTable() {
+async function setupDatabase() {
     const db = await dbPromise;
     await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -31,28 +21,26 @@ async function CREATEuserTable() {
       fullname TEXT NOT NULL UNIQUE,
       password TEXT NOT NULL,
       is_admin INTEGER DEFAULT 0
-    )`);
-}
+    );
 
-async function CREATEposts() {
-    const db = await dbPromise;
-    await db.exec(`
     CREATE TABLE IF NOT EXISTS posts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       post TEXT NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id)
-    )`);
-}
-const adminUser = await db.get(`SELECT * FROM users WHERE fullname = 'admin'`);
+    );
+    `);
 
-if (!adminUser) {
-    // יצירת משתמש admin עם הרשאות ניהול
-    await db.run(`INSERT INTO users (fullname, password, is_admin) VALUES (?, ?, ?)`, ['admin', '1234', 1]);
-    console.log("Admin user created.");
+    // Create admin user if not exists
+    const adminUser = await db.get("SELECT * FROM users WHERE fullname = 'admin'");
+    if (!adminUser) {
+        await db.run("INSERT INTO users (fullname, password, is_admin) VALUES (?, ?, ?)", ['admin', '1234', 1]);
+        console.log("Admin user created.");
+    }
 }
-}
-// ניהול session
+
+setupDatabase().catch(err => console.error(err));
+
 app.use(session({
     secret: 'your_secret_key',
     resave: false,
@@ -61,17 +49,15 @@ app.use(session({
 
 app.use(express.static('public'));
 
-// דפי ניווט
 app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));
 app.get('/register', (req, res) => res.sendFile(path.resolve('public/register.html')));
 app.get('/login', (req, res) => res.sendFile(path.resolve('public/login.html')));
 app.get('/aboutus', (req, res) => res.sendFile(path.resolve('public/aboutus.html')));
 
-// רישום משתמשים
 app.post('/register', async (req, res) => {
     const { fullname, password } = req.body;
     try {
-        const db = await req.db;
+        const db = await dbPromise;
         await db.run(`INSERT INTO users (fullname, password) VALUES (?, ?)`, [fullname, password]);
         res.redirect('/login');
     } catch (error) {
@@ -80,10 +66,9 @@ app.post('/register', async (req, res) => {
     }
 });
 
-// התחברות
 app.post('/login', async (req, res) => {
     try {
-        const db = await req.db;
+        const db = await dbPromise;
         const { fullname, password } = req.body;
         const user = await db.get(`SELECT * FROM users WHERE fullname=? AND password=?`, [fullname, password]);
 
@@ -99,93 +84,33 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// יצירת פוסט
 app.post('/createpost', async (req, res) => {
-    const { posting } = req.body;
-    const db = await req.db;
-
     if (!req.session.user) {
         return res.status(401).send('You must be logged in to post.');
     }
 
+    const { posting } = req.body;
     if (!posting) {
         return res.status(400).send('Please enter a post value');
     }
 
+    const db = await dbPromise;
     await db.run(`INSERT INTO posts (user_id, post) VALUES (?, ?)`, [req.session.user.id, posting]);
     res.redirect('/loggedin');
 });
 
-// דף הפוסטים - כולל קישורים למחיקה ולעריכה
-app.get('/loggedin', async (req, res) => {
-    const db = await req.db;
-    const posts = await db.all(`
-        SELECT posts.id, posts.post, users.fullname, posts.user_id
-        FROM posts 
-        JOIN users ON posts.user_id = users.id
-    `);
-
-    const username = req.session.user ? req.session.user.fullname : 'Guest';
-
-    let html = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Logged In</title>
-        <link rel="stylesheet" href="style.css">
-      </head>
-      <body>
-        <nav>
-            <ul>
-                <li class="welcome-text">Welcome, ${username}</li>
-                <li><a href="/logout">Logout</a></li>
-                <li><a href="/createpost.html">Create Post</a></li>
-            </ul>
-        </nav>
-
-        <h3>All Posts</h3>
-        <div class="posts-container">`;
-
-    posts.forEach(row => {
-        html += `
-        <div class="post">
-            <p><strong>${row.fullname}:</strong> ${row.post}</p>
-            ${req.session.user &&
-                (req.session.user.is_admin || req.session.user.id === row.user_id)
-                ? `
-                <!-- כפתור מחיקה -->
-                <form action="/deletepost/${row.id}" method="POST" style="display:inline;">
-                    <button type="submit">Delete</button>
-                </form>
-                <!-- קישור לעמוד העריכה -->
-                <a href="/editpost/${row.id}" style="margin-left: 10px;">Edit</a>
-              `
-                : ''
-            }
-        </div>`;
-    });
-
-    html += `</div>
-      </body>
-    </html>`;
-
-    res.send(html);
-});
-
-// נתיב למחיקת פוסט
 app.post('/deletepost/:id', async (req, res) => {
     if (!req.session.user) {
         return res.status(401).send('You must be logged in to delete a post.');
     }
 
-    const db = await req.db;
+    const db = await dbPromise;
     const post = await db.get(`SELECT * FROM posts WHERE id = ?`, [req.params.id]);
 
     if (!post) {
         return res.status(404).send('Post not found.');
     }
 
-    // בדיקה האם המשתמש הוא בעל הפוסט או מנהל
     if (!req.session.user.is_admin && post.user_id !== req.session.user.id) {
         return res.status(403).send('You are not allowed to delete this post.');
     }
@@ -199,7 +124,7 @@ app.get('/editpost/:id', async (req, res) => {
         return res.status(401).send('You must be logged in to edit a post.');
     }
 
-    const db = await req.db;
+    const db = await dbPromise;
     const post = await db.get(`SELECT * FROM posts WHERE id = ?`, [req.params.id]);
 
     if (!post) {
@@ -235,7 +160,7 @@ app.post('/editpost/:id', async (req, res) => {
         return res.status(401).send('You must be logged in to edit a post.');
     }
 
-    const db = await req.db;
+    const db = await dbPromise;
     const { newPost } = req.body;
     const post = await db.get(`SELECT * FROM posts WHERE id = ?`, [req.params.id]);
 
@@ -251,7 +176,6 @@ app.post('/editpost/:id', async (req, res) => {
     res.redirect('/loggedin');
 });
 
-// התנתקות
 app.get('/logout', (req, res) => {
     req.session.destroy(() => res.redirect('/'));
 });
